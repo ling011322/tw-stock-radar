@@ -1,0 +1,18 @@
+{
+  "updated_at": "2026-10-05 15:58:21",
+  "source": "Taiwan Stock Exchange OpenAPI",
+  "stock_count": 1380,
+  "test_stock": {
+    "Date": "1151002",
+    "Code": "2330",
+    "Name": "台積電",
+    "TradeVolume": "15792206",
+    "TradeValue": "39508159297",
+    "OpeningPrice": "2505.00",
+    "HighestPrice": "2515.00",
+    "LowestPrice": "2495.00",
+    "ClosingPrice": "2500.00",
+    "Change": "-10.0000",
+    "Transaction": "65783"
+  }
+}
