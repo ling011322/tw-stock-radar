@@ -1,8 +1,10 @@
 import json
 import urllib.request
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 BASE = "https://openapi.twse.com.tw/v1"
+
 
 def get_json(path):
     url = BASE + path
@@ -20,52 +22,90 @@ def get_json(path):
 
 
 def number(value):
-    """把證交所文字資料安全轉成數字"""
     if value is None:
         return None
 
-    value = str(value).replace(",", "").strip()
+    value = str(value).replace(",", "").replace("%", "").strip()
 
     if value in ["", "-", "--", "N/A"]:
         return None
 
     try:
         return float(value)
-    except:
+    except (ValueError, TypeError):
         return None
 
 
 print("開始取得台股資料...")
 
-# ① 每日行情
+
+# ==========================================
+# 1. 每日行情
+# ==========================================
+
 prices = get_json("/exchangeReport/STOCK_DAY_ALL")
 
-# ② PE / 殖利率 / PB
+print(f"行情資料：{len(prices)} 筆")
+
+
+# ==========================================
+# 2. PE / 殖利率 / PB
+# ==========================================
+
 valuation = get_json("/exchangeReport/BWIBBU_ALL")
 
-print(f"行情資料：{len(prices)} 筆")
 print(f"估值資料：{len(valuation)} 筆")
 
 
-# 建立估值資料索引
 valuation_map = {}
 
 for item in valuation:
-
     code = item.get("Code")
 
     if code:
         valuation_map[code] = item
 
 
+# ==========================================
+# 3. 月營收資料
+# ==========================================
+
+revenue = get_json("/opendata/t187ap05_L")
+
+print(f"月營收資料：{len(revenue)} 筆")
+
+
+revenue_map = {}
+
+for item in revenue:
+
+    code = item.get("公司代號")
+
+    if not code:
+        continue
+
+    yoy = number(item.get("去年同月增減(%)"))
+    mom = number(item.get("上月比較增減(%)"))
+
+    revenue_map[code] = {
+        "revenue_yoy": yoy,
+        "revenue_mom": mom
+    }
+
+
+# ==========================================
+# 4. 整合股票資料
+# ==========================================
+
 results = []
+
 
 for stock in prices:
 
     code = stock.get("Code")
     name = stock.get("Name")
 
-    # 只處理一般四碼股票
+    # 只保留一般四碼股票
     if not code or len(code) != 4 or not code.isdigit():
         continue
 
@@ -76,71 +116,124 @@ for stock in prices:
     if close is None or close <= 0:
         continue
 
+
+    # 估值資料
     value_data = valuation_map.get(code, {})
 
     pe = number(value_data.get("PEratio"))
     dividend_yield = number(value_data.get("DividendYield"))
     pb = number(value_data.get("PBratio"))
 
-    # ==============================
-    # 長期投資評分
-    # ==============================
 
-    score = 50
+    # 營收資料
+    revenue_data = revenue_map.get(code, {})
+
+    revenue_yoy = revenue_data.get("revenue_yoy")
+    revenue_mom = revenue_data.get("revenue_mom")
+
+
+    # ======================================
+    # 長期投資評分 V2
+    # ======================================
+
+    score = 50.0
     reasons = []
 
-    # ----- 本益比 -----
 
-    if pe is not None:
+    # --------------------------------------
+    # A. 營收成長
+    # --------------------------------------
 
-        if 0 < pe <= 12:
+    if revenue_yoy is not None:
+
+        if revenue_yoy >= 30:
+            score += 20
+            reasons.append("營收年增強勁")
+
+        elif revenue_yoy >= 15:
             score += 15
+            reasons.append("營收維持良好成長")
+
+        elif revenue_yoy >= 5:
+            score += 10
+            reasons.append("營收穩定成長")
+
+        elif revenue_yoy >= 0:
+            score += 3
+            reasons.append("營收大致穩定")
+
+        elif revenue_yoy <= -20:
+            score -= 15
+            reasons.append("營收明顯衰退")
+
+        elif revenue_yoy <= -10:
+            score -= 10
+            reasons.append("營收年增轉弱")
+
+
+    # --------------------------------------
+    # B. 本益比
+    # --------------------------------------
+
+    if pe is not None and pe > 0:
+
+        if pe <= 10:
+            score += 10
             reasons.append("本益比偏低")
 
         elif pe <= 18:
-            score += 10
+            score += 8
             reasons.append("本益比合理")
 
         elif pe <= 25:
-            score += 5
+            score += 4
 
-        elif pe > 40:
-            score -= 10
+        elif pe <= 35:
+            score += 1
+
+        elif pe > 50:
+            score -= 5
             reasons.append("本益比較高")
 
 
-    # ----- 殖利率 -----
+    # --------------------------------------
+    # C. 殖利率
+    # --------------------------------------
 
     if dividend_yield is not None:
 
         if dividend_yield >= 5:
-            score += 15
+            score += 8
             reasons.append("殖利率具吸引力")
 
         elif dividend_yield >= 3:
-            score += 10
+            score += 5
             reasons.append("殖利率不錯")
 
-        elif dividend_yield >= 2:
-            score += 5
+        elif dividend_yield >= 1.5:
+            score += 2
 
 
-    # ----- PB -----
+    # --------------------------------------
+    # D. 股價淨值比
+    # --------------------------------------
 
-    if pb is not None:
+    if pb is not None and pb > 0:
 
-        if 0 < pb <= 1.5:
-            score += 10
+        if pb <= 1.5:
+            score += 6
             reasons.append("股價淨值比偏低")
 
-        elif pb <= 2.5:
-            score += 5
+        elif pb <= 3:
+            score += 3
 
-        elif pb >= 6:
-            score -= 5
+        # 高 PB 不直接重罰
+        # 成長型公司本來就可能有較高 PB
 
 
-    # ----- 流動性 -----
+    # --------------------------------------
+    # E. 流動性
+    # --------------------------------------
 
     if volume is not None:
 
@@ -148,20 +241,28 @@ for stock in prices:
             score += 5
             reasons.append("成交流動性佳")
 
+        elif volume >= 1_000_000:
+            score += 3
+
         elif volume < 100_000:
             score -= 10
 
 
+    # --------------------------------------
     # 分數限制
-    score = max(0, min(100, score))
+    # --------------------------------------
+
+    score = round(max(0, min(100, score)), 1)
 
 
-    # ==============================
-    # 價格觀察區
-    # ==============================
-
-    # 第一版先採簡單規則
-    # 不是預測未來股價
+    # ======================================
+    # 暫時價格區間
+    # ======================================
+    #
+    # 注意：
+    # 目前只是觀察區，不是真正合理價。
+    # 後續加入歷史價格與財報後會重新設計。
+    # ======================================
 
     buy_low = round(close * 0.92, 2)
     buy_high = round(close * 0.97, 2)
@@ -173,7 +274,6 @@ for stock in prices:
 
 
     results.append({
-
         "code": code,
         "name": name,
 
@@ -184,6 +284,9 @@ for stock in prices:
         "pe": pe,
         "dividend_yield": dividend_yield,
         "pb": pb,
+
+        "revenue_yoy": revenue_yoy,
+        "revenue_mom": revenue_mom,
 
         "long_score": score,
 
@@ -199,59 +302,69 @@ for stock in prices:
 
         "risk_price": risk_price,
 
-        "reasons": reasons[:4]
-
+        "reasons": reasons[:5]
     })
 
 
-# ==============================
-# 基本流動性篩選
-# ==============================
+# ==========================================
+# 5. 基本篩選
+# ==========================================
 
 eligible = [
-
-    x for x in results
-
-    if x["volume"] is not None
-    and x["volume"] >= 500_000
-
+    stock
+    for stock in results
+    if stock["volume"] is not None
+    and stock["volume"] >= 500_000
 ]
 
 
-# ==============================
-# 長期 TOP 5
-# ==============================
+# ==========================================
+# 6. 長期 TOP 5
+# ==========================================
 
 long_term_top5 = sorted(
     eligible,
-    key=lambda x: x["long_score"],
+    key=lambda x: (
+        x["long_score"],
+        x["revenue_yoy"] if x["revenue_yoy"] is not None else -999
+    ),
     reverse=True
 )[:5]
 
 
-print("\n長期投資 TOP 5")
+print("\n===== 長期投資 TOP 5 =====")
 
-for stock in long_term_top5:
+for i, stock in enumerate(long_term_top5, start=1):
 
     print(
+        i,
         stock["code"],
         stock["name"],
+        "分數:",
         stock["long_score"],
-        stock["price"]
+        "營收YoY:",
+        stock["revenue_yoy"]
     )
 
 
-# ==============================
-# 儲存網站資料
-# ==============================
+# ==========================================
+# 7. 儲存網站資料
+# ==========================================
+
+taiwan_now = datetime.now(
+    ZoneInfo("Asia/Taipei")
+)
+
 
 output = {
-
     "updated_at":
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        taiwan_now.strftime("%Y-%m-%d %H:%M:%S"),
 
     "source":
         "Taiwan Stock Exchange OpenAPI",
+
+    "model_version":
+        "Long Term V2",
 
     "stock_count":
         len(results),
@@ -261,7 +374,6 @@ output = {
 
     "stocks":
         results
-
 }
 
 
