@@ -1,0 +1,36 @@
+name: 更新台股資料
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # 台灣時間週一～週五 15:30
+    # GitHub Actions 使用 UTC，所以是 07:30 UTC
+    - cron: "30 7 * * 1-5"
+
+permissions:
+  contents: write
+
+jobs:
+  update-stock-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 取得網站程式
+        uses: actions/checkout@v4
+
+      - name: 設定 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 執行台股資料更新
+        run: python update_data.py
+
+      - name: 儲存最新資料
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stock_data.json
+          git diff --cached --quiet || git commit -m "自動更新台股資料"
+          git push
